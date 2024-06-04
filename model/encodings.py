@@ -38,7 +38,7 @@ def get_encoder(encoding, input_dim=3, n_bins=16,
             )
         out_dim = embed.n_output_dims
     
-    # Identity encoding
+    # Identity encoding -> Directly output the input.
     elif "identity" in encoding.lower():
         embed = tcnn.Encoding(
                 n_input_dims=input_dim,

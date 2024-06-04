@@ -5,6 +5,7 @@ import numpy as np
 import random
 import time
 import torch.multiprocessing as mp
+torch.multiprocessing.set_sharing_strategy('file_system')
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -21,15 +22,23 @@ from helper_functions.printTime import printCurrentDatetime
 from helper_functions.sampling_helper import pixel_rc_to_indices, sample_pixels_random, sample_valid_pixels_random, sample_pixels_mix
 from helper_functions.geometry_helper import qt_to_transform_matrix, matrix_to_quaternion, get_frame_surface_bbox, extract_first_kf_pose
 
+"""
+Here used to record the pytorch code skill.
+.share_memory()_ -> The memory used in multiprocessing threads.
+"""
+
 
 class MIPSFusion():
     def __init__(self, config):
         self.config = config
+        # The code is running on what device.
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dataset = get_dataset(config)
-        
+        # Specify the bound of the learning.
         self.create_bounds()
+
         self.create_pose_data()
+        # Don't use pypose.
         self.get_pose_representation()
         self.create_active_localMLP_vars()
 
@@ -39,17 +48,26 @@ class MIPSFusion():
             pass
 
         self.kfSet = self.create_kfSet(config)
+        # The nerf model(active local mlp) in this paper. -> used for mapping. 
         self.model = JointEncoding(config, self.bounding_box, self.coords_norm_factor).to(self.device)  # active localMLP
+        # The random optimizer -> used for tracking.
         self.randomOptimizer = RandomOptimizer(self.config, self)
+        # The logger used to save the results.
         self.logger = Logger(self.config, self)
+        # It more like a PGO for the pose correction.
         self.poseCorrector = PoseCorrector(self.config, self)
+        # The thread manager.
         self.manager = Manager(self.config, self)
-
+        # The data between the inactivate map with the activate map.
         self.create_shared_data()
+        # The data used for the global BA.
         self.create_global_BA_data()
+        # The inactive map.
         self.inactive_map = InactiveMap(self.config, self)  # InactiveMap process
+        # The inactive map optimized at the backend?
         self.inactive_start = torch.zeros((1, )).share_memory_()  # whether InactiveMap process starts
         self.seq_end = torch.zeros((1, )).share_memory_()  # whether the input sequence ends
+        # What does this mean? seeing in the next.
         self.process_flag = 1
 
 
@@ -63,10 +81,13 @@ class MIPSFusion():
         self.num_frames = self.dataset.num_frames
         self.num_kf = int(self.dataset.num_frames // self.config["mapping"]["keyframe_every"] + 1)  # max keyframe number
 
-        # type of each keyframe. -1: first keyframe of a submap; -2: overlapping keyframe(wo switch); -3: overlapping keyframe(w switch); n(n>=0): ref keyframe_Id of this keyframe
+        # type of each keyframe. -1: first keyframe of a submap; 
+        #                        -2: overlapping keyframe(wo switch); 
+        #                        -3: overlapping keyframe(w switch); n(n>=0): ref keyframe_Id of this keyframe
         self.keyframe_ref = torch.full((self.num_kf, ), -3, dtype=torch.int32).share_memory_()
 
-        # for each overlapping keyframe(indexed by kf_Id), this tensor records the lastly optimized process (1: ActiveMap, -1: InactiveMap)
+        # for each overlapping keyframe(indexed by kf_Id), 
+        # this tensor records the lastly optimized process (1: ActiveMap, -1: InactiveMap)
         self.overlap_kf_flag = torch.zeros((self.num_kf, )).share_memory_()
 
         self.kf_c2w = torch.zeros((self.num_kf, 4, 4)).to(self.device).share_memory_()  # store absolute pose in World Coordinate System of each localMLP's first keyframe or overlapping keyframes
@@ -81,11 +102,15 @@ class MIPSFusion():
 
     # @brief: create active localMLP-related vars
     def create_active_localMLP_vars(self):
-        self.active_localMLP_Id = torch.zeros((1, )).to(torch.int64).share_memory_()  # localMLP_Id of currently active localMLP
-        self.prev_active_localMLP_Id = torch.full((1, ), fill_value=-1).to(torch.int64).share_memory_()  # active localMLP_Id of before latest switch
+        # localMLP_Id of currently active localMLP
+        self.active_localMLP_Id = torch.zeros((1, )).to(torch.int64).share_memory_()  
+        # active localMLP_Id of before latest switch
+        self.prev_active_localMLP_Id = torch.full((1, ), fill_value=-1).to(torch.int64).share_memory_()  
 
-        self.active_first_kf = torch.zeros((1, )).to(torch.int64).share_memory_()  # first kf's keyframe_Id of currently active submap
-        self.last_switch_frame = torch.zeros((1, )).to(torch.int64).share_memory_()  # frame_Id of last active submap switch
+        # first kf's keyframe_Id of currently active submap
+        self.active_first_kf = torch.zeros((1, )).to(torch.int64).share_memory_()  
+        # frame_Id of last active submap switch
+        self.last_switch_frame = torch.zeros((1, )).to(torch.int64).share_memory_()  
         self.last_ovlp_kf_Id = -1 * torch.ones(1, ).to(torch.int64).share_memory_()
 
 
@@ -154,7 +179,9 @@ class MIPSFusion():
 
     def first_frame_mapping(self, batch, n_iters=100):
         print('Initializing first frame')
+        # Specify the first pose of the keyframe.
         c2w = batch["c2w"][0].to(self.device)  # gt pose(c2w) of first pose, Tensor(4, 4), device=cuda:0
+        # The first relative pose in the local map.
         c2w_local = torch.eye(4).to(self.device)
 
         # Step 1: fill keyframe-related, localMLP-related vars for the first keyframe
@@ -163,33 +190,46 @@ class MIPSFusion():
         self.keyframe_ref[0] = -1
 
         self.kfSet.localMLP_first_kf[0] = 0
-        xyz_center, xyz_len = get_frame_surface_bbox(batch["c2w"].squeeze(0), batch["depth"].squeeze(0), batch["direction"].squeeze(0),
-                                                     self.config["cam"]["near"], self.config["cam"]["far"])
+        # The parameter of the used active mlp
+        # The center of the described area and the length of each side.
+        xyz_center, xyz_len = get_frame_surface_bbox(batch["c2w"].squeeze(0), 
+                                                     batch["depth"].squeeze(0), 
+                                                     batch["direction"].squeeze(0),
+                                                     self.config["cam"]["near"], 
+                                                     self.config["cam"]["far"])
+        # The info means?
         self.kfSet.localMLP_info[0] = torch.cat( [torch.ones((1)), xyz_center, xyz_len], 0 )
         self.kfSet.keyframe_localMLP[0, 0] = 0
         self.kfSet.localMLP_first_kf[0] = 0
         self.kfSet.collected_kf_num[0] = self.kfSet.collected_kf_num[0] + 1
 
         # Step 2: training scene representation (default: n_iters=500)
+        # Set the model in the trainning state.
         self.model.train()
         for i in range(n_iters):
             self.map_optimizer.zero_grad()
+            # Randomly sample the pixel from the image->Select which pixel to use.
             indice = self.select_samples(self.dataset.H, self.dataset.W, self.config["mapping"]["sample"])  # sample pixels every round
+            # Get the col id and the row id of the selected pixel. 
             indice_h, indice_w = torch.remainder(indice, self.dataset.H), torch.div(indice, self.dataset.H, rounding_mode="floor")  # selected col_Id, row_Id
-
+            # direction of the selected pixel.
             rays_d_cam = batch["direction"].squeeze(0)[indice_h, indice_w, :].to(self.device)  # dir of sampled rays in Camera Coords, Tensor(sample_num, 3), device=cuda:0
+            # rgb -> The rendering target.
             target_s = batch["rgb"].squeeze(0)[indice_h, indice_w, :].to(self.device)  # gt RGB of sampled rays in Camera Coords, Tensor(sample_num, 3), device=cuda:0
+            # depth -> The rendering target.
             target_d = batch["depth"].squeeze(0)[indice_h, indice_w].to(self.device).unsqueeze(-1)  # gt depth of sampled rays in Camera Coords, Tensor(sample_num, 1), device=cuda:0
-
+            # The start of each ray.
             rays_o = c2w_local[None, :3, -1].repeat(self.config["mapping"]["sample"], 1)  # Tensor(N, 3)
+            # The direction of each ray.
             rays_d = torch.sum(rays_d_cam[..., None, :] * c2w_local[:3, :3], -1)  # Tensor(N, 3)
-
+            # Do the rendering and get the final results->The key insight of one nerf model.
             ret = self.model.forward(rays_o, rays_d, target_s, target_d)
             loss = self.get_loss_from_ret(ret)
             loss.backward()
             self.map_optimizer.step()
 
         self.kfSet.add_keyframe(batch)
+        # Here, we get the first local map of the first keyframe.
         print("First frame initialized")
         return ret, loss
 
@@ -269,11 +309,14 @@ class MIPSFusion():
             current_pose = self.est_c2w_data[cur_frame_id][None, ...]
             poses_all = torch.cat([poses_fixed, current_pose], dim=0)
         else:
-            poses_fixed = torch.nn.parameter.Parameter(poses[:1]).to(self.device)  # pose of first kf is always fixed
+            # pose of first kf is always fixed
+            poses_fixed = torch.nn.parameter.Parameter(poses[:1]).to(self.device)  
+            # get the current pose.
             current_pose = self.est_c2w_data[cur_frame_id][None, ...]
 
             if self.optim_cur:
                 cur_rot, cur_trans, pose_optimizer, = self.get_pose_param_optim( torch.cat([poses[1:], current_pose]))
+                # If optimize the current pose, it will be stored in the pose_optim after optimized.
                 pose_optim = self.matrix_from_tensor(cur_rot, cur_trans).to(self.device)  # related keyframes' poses (except first keyframe pose)
                 poses_all = torch.cat([poses_fixed, pose_optim], dim=0)
             else:
@@ -286,8 +329,10 @@ class MIPSFusion():
         if pose_optimizer is not None:
             pose_optimizer.zero_grad()
 
-        current_rays_raw = torch.cat([batch["direction"], batch["rgb"], batch["depth"][..., None]], dim=-1)  # Tensor(1, H, W, 7), device=cpu
-        current_rays = current_rays_raw.reshape(-1, current_rays_raw.shape[-1])  # Tensor(H * W, 7), device=cpu
+        # Tensor(1, H, W, 7), device=cpu
+        current_rays_raw = torch.cat([batch["direction"], batch["rgb"], batch["depth"][..., None]], dim=-1)  
+        # Tensor(H * W, 7), device=cpu
+        current_rays = current_rays_raw.reshape(-1, current_rays_raw.shape[-1])  
 
         # Step 3: perform n_iters BA
         for i in range(self.config["mapping"]["iters"]):
@@ -658,6 +703,7 @@ class MIPSFusion():
 
 
     # entry function
+    # The interface of the process start.
     def run(self):
         # Create InactiveMap process
         processes = []
@@ -669,16 +715,22 @@ class MIPSFusion():
         print(printCurrentDatetime() + "(Active Mapping process) Process starts!!! (PID=%d)" % os.getpid())
 
         self.create_optimizer()
+        # load the data from the dataset -> Get the batch data.
         data_loader = DataLoader(self.dataset, num_workers=self.config["data"]["num_workers"])
-
+        
         for i, batch in tqdm( enumerate(data_loader) ):
+            # If it is the first frame.
             if i == 0:  # First frame mapping
+                # First, do the mapping.
                 self.first_frame_mapping(batch, self.config["mapping"]["first_iters"])
                 self.logger.img_render_save(self.model, self.est_c2w_data[i], batch["rgb"].squeeze(0), batch["depth"].squeeze(0), 0)
             else:
-                self.tracking_render(batch, i, self.config["tracking"]["iter_RO"], self.config["tracking"]["iter"])  # *** do tracking for each frame
+                # *** do tracking for each frame -> The tracking process, using the random optimization, which means the particle filter at detailed.
+                self.tracking_render(batch, i, self.config["tracking"]["iter_RO"], self.config["tracking"]["iter"])  
     
-                if i % self.config["mapping"]["map_every"] == 0:  # *** do mapping every 5 frames
+                # *** do mapping every 5 frames
+                if i % self.config["mapping"]["map_every"] == 0:  
+                    # Doint the local BA.
                     self.local_BA(batch, i)
                     self.inactive_map.active_model_copy.load_state_dict(self.model.state_dict())
                     self.inactive_map.active_model_copy_Id[0] = self.active_localMLP_Id[0]

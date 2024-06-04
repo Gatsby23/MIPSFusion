@@ -29,10 +29,12 @@ class BaseDataset(Dataset):
         self.fx, self.fy = cfg["cam"]["fx"]//cfg["data"]["downsample"], cfg["cam"]["fy"]//cfg["data"]["downsample"]
         self.cx, self.cy = cfg["cam"]["cx"]//cfg["data"]["downsample"], cfg["cam"]["cy"]//cfg["data"]["downsample"]
         self.distortion = np.array(cfg["cam"]["distortion"]) if 'distortion' in cfg["cam"] else None
+        # Crop some pxiel?
         self.crop_size = cfg["cam"]["crop_edge"] if 'crop_edge' in cfg["cam"] else 0
+        # Won't use the edge pixel in the tracking -> Nice trick.
         self.ignore_w = cfg["tracking"]["ignore_edge_W"]
         self.ignore_h = cfg["tracking"]["ignore_edge_H"]
-
+        # Get the whole pixel of the used images.
         self.total_pixels = (self.H - self.crop_size*2) * (self.W - self.crop_size*2)  # pixel number of a frame
 
     def __len__(self):
@@ -91,7 +93,8 @@ class ReplicaDataset(BaseDataset):
             W = W // self.downsample_factor
             color_data = cv2.resize(color_data, (W, H), interpolation=cv2.INTER_AREA)
             depth_data = cv2.resize(depth_data, (W, H), interpolation=cv2.INTER_NEAREST)
-
+        
+        # Get it from here.
         if self.rays_d is None:
             self.rays_d = get_camera_rays(self.H, self.W, self.fx, self.fy, self.cx, self.cy)
 

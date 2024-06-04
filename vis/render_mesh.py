@@ -1,4 +1,6 @@
 import os
+import sys
+sys.path.append('/home/robotics/Lab_Study/NeRF_Study/MIPSFusion/')
 from utils import config
 import torch
 from torch.utils.data import DataLoader

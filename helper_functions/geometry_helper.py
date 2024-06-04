@@ -131,19 +131,21 @@ def rays_camera_to_world2(rays_d_cam, c2w_mats, pose_indices):
 #-@return xyz_len: Tensor(3, ).
 @torch.no_grad()
 def get_frame_surface_bbox(frame_pose, frame_depth, rays_d, dist_near, dist_far):
+    # Get the rays.
     rays_d_w, rays_o_w = rays_camera_to_world(rays_d.reshape((-1, 3)), frame_pose)  # Tensor(N, 3) / Tensor(N, 3)
 
     # filter the pixels invalid depth values
     frame_depth = frame_depth.reshape((-1, 1))  # Tensor(N, 1)
     valid_mask = (frame_depth.squeeze() > dist_near) * (frame_depth.squeeze() < dist_far)  # Tensor(N, ), dtype=torch.bool
-
+    # The point in the world.
     pts_world = rays_o_w + rays_d_w * frame_depth
+    # The point used or not.
     valid_pts_world = pts_world[valid_mask]  # Tensor(N', 3)
-
     xyz_max, _ = torch.max(valid_pts_world, 0)
     xyz_min, _ = torch.min(valid_pts_world, 0)
     xyz_len = xyz_max - xyz_min
     xyz_center = xyz_min + 0.5 * xyz_len
+    # The center of the voxel-> maybe this describe is better. 
     return xyz_center, xyz_len
 
 

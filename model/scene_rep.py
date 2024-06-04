@@ -15,7 +15,9 @@ class JointEncoding(nn.Module):
         self.bounding_box = bound_box
         self.coords_norm_factor = coords_norm_factor
         self.get_resolution()
+        # Get the encoding part of the mlp -> query SDF.
         self.get_encoding(config)
+        # Get the decoding part of the mlp -> query SDF.
         self.get_decoder(config)
         self.save_initial_param()  # save initial parameters of scene_rep
 
@@ -33,14 +35,14 @@ class JointEncoding(nn.Module):
 
     # @brief: get encoding of this submap
     def get_encoding(self, config):
-        # Coordinate encoding
+        # Coordinate encoding -> Encoding the pose parameters.
         self.embedpos_fn, self.input_ch_pos = get_encoder(config["pos"]["enc"], n_bins=self.config["pos"]["n_bins"])
 
-        # Sparse parametric encoding (SDF)
+        # Sparse parametric encoding (SDF) -> Encoding for the grid.
         self.embed_fn, self.input_ch = get_encoder(config["grid"]["enc"], log2_hashmap_size=config["grid"]["hash_size"], desired_resolution=256)
 
 
-    # @brief: get MLP
+    # @brief: get MLP -> This MLP is used to infer the SDF and color image.
     def get_decoder(self, config):
         self.decoder = MLP_reg(config, input_ch=self.input_ch, input_ch_pos=self.input_ch_pos)  # MLP + MRHG
 
@@ -92,6 +94,7 @@ class JointEncoding(nn.Module):
             weights: [N_rays, N_samples]
         '''
         rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
+        # The raw directly inference the sdf out.
         weights = self.sdf2weights(raw[..., 3], z_vals, args=self.config)
         rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
 
@@ -140,7 +143,7 @@ class JointEncoding(nn.Module):
                 inputs_flat = (inputs_flat - self.bounding_box[:, 0]) / (self.bounding_box[:, 1] - self.bounding_box[:, 0])
             else:
                 inputs_flat = (inputs_flat + self.coords_norm_factor) / (2 * self.coords_norm_factor)
-
+        # Here to do the rendering -> Use batch inputs to do the inference through the query color sdf network.
         outputs_flat = batchify(self.query_color_sdf, None)(inputs_flat)  # Tensor(n_rays * n_samples, 10)
         outputs = torch.reshape( outputs_flat, list(inputs.shape[:-1]) + [ outputs_flat.shape[-1] ] )  # Tensor(n_rays, n_samples, 10)
         return outputs
@@ -151,11 +154,14 @@ class JointEncoding(nn.Module):
     # @param rays_d: rays directions, Tensor(n_rays, 3);
     # @param target_d: gt depth of sampled rays, Tensor(n_rays, 1).
     def render_rays(self, rays_o, rays_d, target_d=None):
+        # How many rays we will used in the next.
         n_rays = rays_o.shape[0]  # number of sampled rays, int
 
         # Step 1: sampling depth value along each given ray
         if target_d is not None:  # default
+            # sample the point through the linspace from torch function.
             z_samples = torch.linspace(-self.config["training"]["range_d"], self.config["training"]["range_d"], steps=self.config["training"]["n_range_d"]).to(target_d) 
+            # target d is the depth of each point.
             z_samples = z_samples[None, :].repeat(n_rays, 1) + target_d  # Tensor(n_rays, n_range_d), device=cuda:0
             z_samples[target_d.squeeze() <= 0] = torch.linspace(self.config["cam"]["near"], self.config["cam"]["far"], steps=self.config["training"]["n_range_d"]).to(target_d)  # for those sampled pixels who have no gt depth values
 
@@ -168,7 +174,7 @@ class JointEncoding(nn.Module):
             z_vals = torch.linspace(self.config["cam"]["near"], self.config["cam"]["far"], self.config["training"]["n_samples"]).to(rays_o)
             z_vals = z_vals[None, :].repeat(n_rays, 1) # [n_rays, n_samples]
 
-        # Step 2: perturb sampling depths
+        # Step 2: perturb sampling depths -> More like increase the robustness of the depth, I think lidar point maybe not use this function.
         if self.config["training"]["perturb"] > 0.:
             mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
             upper = torch.cat([mids, z_vals[..., -1:]], -1)
@@ -178,6 +184,7 @@ class JointEncoding(nn.Module):
         # Step 3: do inference and volume rendering
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # Tensor(N_rays, N_samples, 3)
         raw = self.run_network(pts)  # Tensor(N_rays, N_samples, 3), device=cuda:0
+        # Transform the output to the rgb and the depth map, but it aslo have the uncertainty map.
         rgb_map, disp_map, acc_map, weights, depth_map, depth_var = self.raw2outputs(raw, z_vals)
 
         ret = {"rgb": rgb_map, "depth": depth_map, "disp_map": disp_map, "acc_map": acc_map, "depth_var": depth_var}
@@ -201,7 +208,8 @@ class JointEncoding(nn.Module):
              r r r tz
         '''
 
-        # Get render results
+        # Get render results-
+        # Here we get the rendered depth result.
         rend_dict = self.render_rays(rays_o, rays_d, target_d=target_d)
 
         if not self.training:

@@ -89,7 +89,7 @@ def get_sdf_loss(z_vals, target_d, predicted_sdf, sdf_prob, truncation, cate_num
     index_range = torch.arange(0, cate_num).to(sdf_prob)  # 每个分类的class_Id, EagerTensor(cate_num, )
 
     if EMD_w > 0:
-        # 2.1: free-space EMD loss (for pts in front free space)
+        # 2.1: free-space EMD loss (for pts in front free space) -> This loos is important to LiDAR-based.
         fs_loss_all = sdf_prob * (max_class_Id - index_range).to(sdf_prob) * front_mask[..., None]   # pred class_Id should be as close as possible to max_class_Id
         fs_loss1 = torch.mean( torch.sum(fs_loss_all, dim=-1) ) / 250
 

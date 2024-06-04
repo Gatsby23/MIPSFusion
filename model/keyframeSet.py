@@ -470,13 +470,15 @@ class KeyframeSet():
     #-@return avail_ovlp_kf_idx: indices of available overlapping keyframes in avail_kf_Ids, Tensor(k', )
     #-@return avail_ovlp_kf_Ids: keyframe_Ids of available overlapping keyframes, Tensor(k', ).
     def extract_localMLP_vars(self, localMLP_Id, kf_poses, est_c2w_data, kf_ref, process_flag):
+        # Get how many keyframes here.
         num_kf = self.collected_kf_num[0].clone()  # collected keyframe num so far, Tensor(, )
         # Step 1: get overlapping keyframes mutex mask (only those overlapping keyframes which bind to currrent active localMLP and another inactive localMLP have non-zero values)
         ovlp_mutex = self.keyframe_mutex_mask.clone()[0, :num_kf]  # Tensor(num_kf, ), 0/1/-1
         ovlp_mutex_mask = torch.where(ovlp_mutex==process_flag, torch.zeros_like(ovlp_mutex), torch.ones_like(ovlp_mutex))  # Tensor(num_kf, ), 0/1
 
         # Step 2: find first keyframe of given localMLP (world pose and keyframe_Id)
-        first_kf_pose, first_kf_Id = self.extract_first_kf_pose(localMLP_Id, kf_poses)  # first keyframe's pose in World Coordinate System / kf_Id of given localMLP, Tensor(4, 4)/Tensor(, )
+         # first keyframe's pose in World Coordinate System / kf_Id of given localMLP, Tensor(4, 4)/Tensor(, )
+        first_kf_pose, first_kf_Id = self.extract_first_kf_pose(localMLP_Id, kf_poses) 
         first_kf_pose = first_kf_pose.detach()
 
         # Step 3: find all available keyframes (1.it must be related keyframe; 2.for overlapping keyframe, its last optimization must be done in another process)
